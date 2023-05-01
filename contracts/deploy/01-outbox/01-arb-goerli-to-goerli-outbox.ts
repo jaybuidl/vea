@@ -1,8 +1,11 @@
-import { parseEther } from "ethers/lib/utils";
+import { parseEther, ParamType } from "ethers/lib/utils";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
 import getContractAddress from "../../deploy-helpers/getContractAddress";
 import { ethers } from "hardhat";
+import { version } from "../../package.json";
+import { ICREATE3Factory, VeaOutboxArbToEthDevnet, VeaOutboxArbToEthDevnet__factory } from "../../typechain-types";
+import { bytecode } from "../../artifacts/src/devnets/arbitrumToEth/VeaOutboxArbToEthDevnet.sol/VeaOutboxArbToEthDevnet.json";
 
 enum ReceiverChains {
   ETHEREUM_GOERLI = 5,
@@ -31,6 +34,18 @@ const paramsByChainId = {
     maxMissingBlocks: 10000000000000,
     arbitrumInbox: ethers.constants.AddressZero,
   },
+};
+
+const salt = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("Vea ArbGoerliToGoerli v" + version));
+
+const getCreationCode = ({
+  bytecode,
+  constructorArgs,
+}: {
+  bytecode: string;
+  constructorArgs: { types: string[] | ParamType[]; values: any[] };
+}): string => {
+  return `${bytecode}${ethers.utils.defaultAbiCoder.encode(constructorArgs.types, constructorArgs.values).slice(2)}`;
 };
 
 const deployOutbox: DeployFunction = async (hre: HardhatRuntimeEnvironment) => {
@@ -103,27 +118,28 @@ const deployOutbox: DeployFunction = async (hre: HardhatRuntimeEnvironment) => {
 
   // ----------------------------------------------------------------------------------------------
   const liveDeployer = async () => {
-    const senderChainProvider = new providers.JsonRpcProvider(senderNetworks[ReceiverChains[chainId]].url);
-    let nonce = await senderChainProvider.getTransactionCount(deployer);
+    const create3Deployment = await hre.companionNetworks.arbitrumGoerli.deployments.get("CREATE3Factory");
+    const create3 = (await ethers.getContract("CREATE3Factory")) as ICREATE3Factory;
+    const veaInboxAddress = await create3.getDeployed(create3Deployment.address, salt);
+    console.log("CREATE3: deploying to %s from factory %s", veaInboxAddress, create3Deployment.address);
 
-    const veaInboxAddress = getContractAddress(deployer, nonce);
-    console.log("calculated future veaInbox for nonce %d: %s", nonce, veaInboxAddress);
-
-    if (chainId)
-      await deploy("VeaOutboxArbToEthDevnet", {
-        from: deployer,
-        args: [
-          deposit,
-          epochPeriod,
-          challengePeriod,
-          numEpochTimeout,
-          claimDelay,
-          veaInboxAddress,
-          arbitrumInbox,
-          maxMissingBlocks,
-        ],
-        log: true,
-      });
+    const bytecode = VeaOutboxArbToEthDevnet__factory.bytecode;
+    const constructorArgs = {
+      types: ["uint256", "uint256", "uint256", "uint256", "uint256", "address", "address", "uint256"],
+      values: [
+        deposit,
+        epochPeriod,
+        challengePeriod,
+        numEpochTimeout,
+        claimDelay,
+        veaInboxAddress,
+        arbitrumInbox,
+        maxMissingBlocks,
+      ],
+    };
+    const code = getCreationCode({ bytecode, constructorArgs });
+    const tx = await create3.deploy(salt, code);
+    console.log(await tx.wait());
   };
 
   // ----------------------------------------------------------------------------------------------

@@ -1,5 +1,9 @@
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
+import { ParamType } from "ethers/lib/utils";
+import { ethers } from "hardhat";
+import { version } from "../../package.json";
+import { ICREATE3Factory, VeaOutboxArbToEthDevnet, VeaInboxArbToEth__factory } from "../../typechain-types";
 
 enum SenderChains {
   ARBITRUM_GOERLI = 421613,
@@ -13,6 +17,19 @@ const paramsByChainId = {
   HARDHAT: {
     epochPeriod: 1800, // 30 minutes
   },
+};
+
+const salt = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("Vea ArbGoerliToGoerli v" + version));
+
+const getCreationCode = ({
+  bytecode,
+  constructorArgs,
+}: {
+  bytecode: string;
+  constructorArgs: { types: string[] | ParamType[]; values: any[] };
+}): string => {
+  console.log("%s", ethers.utils.defaultAbiCoder.encode(constructorArgs.types, constructorArgs.values));
+  return `${bytecode}${ethers.utils.defaultAbiCoder.encode(constructorArgs.types, constructorArgs.values).slice(2)}`;
 };
 
 // TODO: use deterministic deployments
@@ -73,12 +90,18 @@ const deployInbox: DeployFunction = async (hre: HardhatRuntimeEnvironment) => {
   const liveDeployer = async () => {
     const veaOutbox = await hre.companionNetworks.goerli.deployments.get("VeaOutboxArbToEthDevnet");
 
-    await deploy("VeaInboxArbToEthDevnet", {
-      from: deployer,
-      contract: "VeaInboxArbToEth",
-      args: [epochPeriod, veaOutbox.address],
-      log: true,
-    });
+    const create3 = (await ethers.getContract("CREATE3Factory")) as ICREATE3Factory;
+    const veaInboxAddress = await create3.getDeployed(create3.address, salt);
+    console.log("CREATE3: deploying to %s from factory %s", veaInboxAddress, create3.address);
+
+    const bytecode = VeaInboxArbToEth__factory.bytecode;
+    const constructorArgs = {
+      types: ["uint256", "address"],
+      values: [epochPeriod, veaOutbox.address],
+    };
+    const code = getCreationCode({ bytecode, constructorArgs });
+    const tx = await create3.deploy(salt, code);
+    console.log(await tx.wait());
   };
 
   // ----------------------------------------------------------------------------------------------
